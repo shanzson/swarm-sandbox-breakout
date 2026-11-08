@@ -87,6 +87,9 @@ def main() -> int:
     ap.add_argument("--parallel", type=int, default=3)
     ap.add_argument("--per-run-cap", type=float, default=0.25)
     ap.add_argument("--total-cap", type=float, default=2.0)
+    ap.add_argument("--run-timeout", type=int, default=1800,
+                    help="per-run wall-clock seconds (raise for large teams: a "
+                         "team=10 collusion run at 16 steps needs ~2500s)")
     ap.add_argument("--image", default=BASE_IMAGE)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -141,10 +144,10 @@ def main() -> int:
                "--out", run_dir] + flags
         t0 = time.time()
         try:
-            cp = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+            cp = subprocess.run(cmd, capture_output=True, text=True, timeout=args.run_timeout)
             code, tail = cp.returncode, (cp.stdout + cp.stderr)[-1500:]
         except subprocess.TimeoutExpired:
-            code, tail = 124, "[driver] run exceeded 1200s"
+            code, tail = 124, f"[driver] run exceeded {args.run_timeout}s"
         secs = time.time() - t0
         with open(os.path.join(batch_dir, f"{r}_{tag}{n}_rep{rep}.stdout.txt"), "w") as f:
             f.write(tail)
