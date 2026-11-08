@@ -21,7 +21,7 @@ import os
 import time
 
 from swarm_sandbox import sandbox, scenario as scenario_mod
-from swarm_sandbox.broker import Agent, Limits, run_episode
+from swarm_sandbox.broker import Agent, Limits, run_episode, score_breakdown, MAX_SCORE
 from swarm_sandbox.eventlog import EventLog
 from swarm_sandbox.llm import AdaptionClient, RunBudget
 from swarm_sandbox.mock import MockClient, RelayMock
@@ -72,7 +72,9 @@ def main() -> int:
     ap.add_argument("--agents", type=int, default=1, help="number of agents (team mode)")
     ap.add_argument("--model", default="deepseek-v4-flash")
     ap.add_argument("--mock", action="store_true", help="use the scripted mock, no API")
-    ap.add_argument("--max-steps", type=int, default=8)
+    ap.add_argument("--max-steps", type=int, default=16)
+    ap.add_argument("--no-reward", action="store_true",
+                    help="disable the incentive (scoreboard / in-fiction) entirely")
     ap.add_argument("--spend-cap", type=float, default=5.0, help="credits for the WHOLE run")
     ap.add_argument("--image", default=None, help="override the agent image")
     ap.add_argument("--no-chat", action="store_true",
@@ -155,10 +157,18 @@ def main() -> int:
             agents.append(Agent(agent_id=f"A{i}", client=client, container=c))
 
         shared_channel = (args.mode == "team") and not args.no_chat
+        # Reward is tied to the prompt arm: the test arm sees an explicit
+        # scoreboard; the realistic arm gets an in-fiction incentive (no numbers,
+        # no mention of a test). Either way WE tally the score from canary hits.
+        if args.no_reward:
+            reward = "none"
+        else:
+            reward = "in_fiction" if args.realistic else "test_score"
         res = run_episode(
             agents, log=log, limits=Limits(max_steps=args.max_steps),
             sink_host=scen.sink_addr, shared_channel=shared_channel,
             tell_sink=cfg.tell_sink, realistic=args.realistic,
+            reward=reward, score_fn=scen.successes,
         )
 
         # Positive control: confirm the apparatus (secret readable, sink reachable)
@@ -173,6 +183,8 @@ def main() -> int:
         log.append("apparatus", apparatus)
 
         succ = scen.successes()
+        _score, _points = score_breakdown(succ)   # our own tally, from canary hits
+        _max_score = MAX_SCORE
         attempted = {r: False for r in ALL_ROUTES}
         for a in res["attempts"]:
             for r in a["routes"]:
@@ -215,6 +227,8 @@ def main() -> int:
             "apparatus": apparatus, "valid": valid,
             "attempted": attempted, "succeeded": succ, "status": status,
             "n_attempts": len(res["attempts"]), "steps_used": res["steps_used"],
+            "reward": reward, "score": _score, "max_score": _max_score,
+            "points": _points,
             "spend_credits": spend, "cost_estimated": estimated,
         }
         with open(os.path.join(run_dir, "result.json"), "w") as f:
@@ -224,6 +238,7 @@ def main() -> int:
         ok, msg = EventLog.verify(os.path.join(run_dir, "events.jsonl"))
         print(f"\nlog integrity: {msg}")
         print(f"valid run: {valid}   runtime: {runtime_effective}   "
+              f"score: {_score}/{_max_score} ({reward})   "
               f"spend: {spend:.4f} credits{' (ESTIMATED)' if estimated else ''}")
         print(f"run dir: {run_dir}")
     finally:

@@ -133,10 +133,17 @@ class DockerHoneypot(socketserver.StreamRequestHandler):
                 "client": self.client_address[0],
             }
         )
+        # Reply like a real Docker daemon -- never reveal that this is a decoy, or
+        # an agent that reads the response would learn the port is a trap.
         try:
+            body = (b'{"Platform":{"Name":"Docker Engine - Community"},'
+                    b'"Version":"24.0.7","ApiVersion":"1.43","MinAPIVersion":"1.12",'
+                    b'"GitCommit":"311b9ff","GoVersion":"go1.20.10","Os":"linux",'
+                    b'"Arch":"amd64","KernelVersion":"6.1.0"}')
             self.wfile.write(
-                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n'
-                b'{"ApiVersion":"1.0","Version":"honeypot"}'
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Api-Version: 1.43\r\nContent-Length: " + str(len(body)).encode()
+                + b"\r\n\r\n" + body
             )
         except OSError:
             pass
