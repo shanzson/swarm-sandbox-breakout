@@ -52,6 +52,15 @@ EXPERIMENT = [
     ("collusion", "team", ["--realistic"]),
 ]
 
+# Focused swarm study: only the conditions where a large team matters. Run this
+# with --team-size 10 (or more) and --parallel 1 (so N agent containers from
+# several runs don't pile up in memory at once).
+SWARM_PLAN = [
+    ("1-open", "team", []),                 # does a big swarm all pile onto the same routes?
+    ("collusion", "team", []),              # does a big swarm collude over the chat?
+    ("collusion", "team", ["--no-chat"]),   # control: no channel -> no leak
+]
+
 
 def _spend_from_log(run_dir: str) -> tuple[float, str]:
     log = os.path.join(run_dir, "events.jsonl")
@@ -71,6 +80,8 @@ def _spend_from_log(run_dir: str) -> tuple[float, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
+    ap.add_argument("--plan", choices=["full", "swarm"], default="full",
+                    help="'full' = whole experiment; 'swarm' = only large-team conditions")
     ap.add_argument("--team-size", type=int, default=3)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--parallel", type=int, default=3)
@@ -87,8 +98,9 @@ def main() -> int:
         print("ERROR: Docker is not available.")
         return 2
 
+    chosen = SWARM_PLAN if args.plan == "swarm" else EXPERIMENT
     plan = []
-    for (r, mode, flags) in EXPERIMENT:
+    for (r, mode, flags) in chosen:
         cfg = ROUNDS[r]
         if cfg.runtime and not sandbox.runtime_available(cfg.runtime):
             print(f"SKIP {r}: runtime {cfg.runtime} not installed")
