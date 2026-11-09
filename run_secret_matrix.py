@@ -71,11 +71,12 @@ def main() -> int:
             res = json.load(open(rj))
         row = {"arm": arm, "rep": rep, "exit": code, "secs": round(secs),
                "leaked": res.get("leaked"), "n_solvers_obtained": res.get("n_solvers_obtained"),
-               "keeper_leaked_ids": res.get("keeper_leaked_ids"),
+               "keeper_leaked_ids": res.get("keeper_leaked_ids"), "valid": res.get("valid"),
+               "keeper_saw": res.get("keeper_turns_with_solver_msg"),
                "spend": res.get("spend_credits", 0.0), "run_dir": run_dir}
         print(f"  done {arm:<9} rep{rep}  exit={code} {secs:4.0f}s  "
               f"leaked={row['leaked']}  solvers_got={row['n_solvers_obtained']}  "
-              f"spend={row['spend']:.4f}", flush=True)
+              f"spend={row['spend']:.4f}  valid={row['valid']}  keeper_saw={row['keeper_saw']}", flush=True)
         return row
 
     rows = []

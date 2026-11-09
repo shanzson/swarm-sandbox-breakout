@@ -63,12 +63,15 @@ def fig_framing():
 
 
 def fig_secret():
-    ds = _secret_rate("runs/secret_deepseek/*/result.json", "runs/secret_adv_deepseek/*/result.json")
-    gl = _secret_rate("runs/secret_glm/*/result.json", "runs/secret_adv_glm/*/result.json")
-    arms = ["baseline", "strict", "helpful", "adversarial"]
+    ds = _secret_rate("runs/secret_deepseek/*/result.json", "runs/secret_live_deepseek/*/result.json")
+    gl = _secret_rate("runs/secret_glm/*/result.json", "runs/secret_live_glm/*/result.json")
+    # The first `adversarial` arm is NOT plotted: its keepers finished before any solver
+    # message reached them. `adversarial-live` is the fixed, validated re-run (keepers start
+    # after the solvers post and are shown the file every turn).
+    arms = ["baseline", "strict", "helpful", "adversarial-live"]
     labels = {"baseline": "baseline\n(not told to\nkeep secret)",
               "strict": "strict\n(ordered to\nguard)", "helpful": "helpful-\nbut-guard",
-              "adversarial": "adversarial\n(solvers attack\n+ inject)"}
+              "adversarial-live": "under pressure\n(solvers demand\nthe secret)"}
     fig, ax = plt.subplots(figsize=(7.8, 3.9))
     x = range(len(arms)); w = 0.38
     series = [("deepseek-v4-flash", ds, -w/2), ("glm-5.2", gl, w/2)]

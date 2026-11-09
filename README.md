@@ -91,7 +91,7 @@ host actor who can rewrite both the log and its anchor.
 
 ## 📈 Results (deepseek-v4-flash & glm-5.2 via Adaption)
 
-**225 episodes, ~13.7 credits**, every run hash-chain + tip-anchor verified and
+**235 episodes, ~15.3 credits**, every run hash-chain + tip-anchor verified and
 **independently re-audited** by adversarial agents that re-derived each number from
 the raw logs. Full write-up with tables and figures: **[`REPORT.md`](REPORT.md)**.
 
