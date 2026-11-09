@@ -31,6 +31,22 @@ from typing import Any
 
 import httpx
 
+# ---- HOW TO READ THIS FILE ----
+# Purpose: the ONLY place the broker talks to the model provider. It enforces
+# three trust boundaries before any request leaves this process.
+# Map:
+#   * _key / redact: the API key is read only from ADAPTION_API_KEY (never an
+#     argument or file an agent could set) and is scrubbed from any text we log.
+#   * validate_tools + _FORBIDDEN_TOOL_TYPES: only our own local "function" tools
+#     are sent; provider-side tools (mcp, web_search, code_interpreter, ...) that
+#     could act outside our sandbox are refused.
+#   * RunBudget: one spend ceiling shared across the WHOLE run; .check() before a
+#     request, .charge() after. charge() FAILS CLOSED (see below).
+#   * AdaptionClient.respond / _parse: builds the request (store:false), retries
+#     transient errors, and reads back only text + function_call items.
+# Invariant: the model returns data, never actions -- it cannot execute anything;
+# whether a command runs is the broker's decision, inside the locked container.
+
 ADAPTION_URL = "https://api.prod.adaptionlabs.ai/api/v1/responses"
 
 # Tool `type` values that execute on the provider side and could reach outside
@@ -61,7 +77,12 @@ class UnsafeToolError(ValueError):
     """Raised when a tool definition would run outside our sandbox."""
 
 
+# ---- key handling and tool allowlist (the trust boundaries) ----
+
 def _key() -> str:
+    # The key comes ONLY from the environment. Taking it from an argument or a
+    # file would let an agent that can influence those inputs steer our spend or
+    # swap in its own key; env-only keeps it on the broker's side of the boundary.
     key = os.environ.get("ADAPTION_API_KEY")
     if not key:
         raise RuntimeError(
@@ -73,6 +94,8 @@ def _key() -> str:
 
 def redact(text: str) -> str:
     """Remove the API key from text before it is logged or displayed."""
+    # Last line of defence: even if the key is echoed back in a provider error or
+    # tool output, this strips it before the text reaches the log or a display.
     if not text:
         return text
     key = os.environ.get("ADAPTION_API_KEY")
@@ -83,6 +106,10 @@ def redact(text: str) -> str:
 
 def validate_tools(tools: list[dict[str, Any]]) -> None:
     """Refuse any tool that is not one of our own local function tools."""
+    # Allowlist, not blocklist: anything that is not a local "function" tool is
+    # rejected. Provider-side tools (web_search, code_interpreter, mcp, ...) would
+    # execute outside our sandbox where nothing is logged or contained, so they
+    # must never be sent -- failing the request is the safe outcome.
     for t in tools:
         ttype = t.get("type")
         if ttype in _FORBIDDEN_TOOL_TYPES:
@@ -101,6 +128,8 @@ class Usage:
     credits: float = 0.0
 
 
+# ---- the shared, fail-closed spend budget ----
+
 class RunBudget:
     """A single spend ceiling shared by every agent in a run.
 
@@ -116,6 +145,9 @@ class RunBudget:
         self.cost_missing = False  # set if the provider ever omitted a usable cost
 
     def check(self) -> None:
+        # Two independent stops: credit spend AND a raw request count. The request
+        # ceiling is a backstop so the run still halts even if cost accounting is
+        # broken or every response reports zero cost.
         if self.total.credits >= self.cap_credits:
             raise SpendCapExceeded(
                 f"Run spent {self.total.credits:.4f} >= cap {self.cap_credits} credits."
@@ -132,6 +164,8 @@ class RunBudget:
         from tokens and a warning is emitted once, so a missing/renamed cost
         field degrades to a conservative estimate instead of counting as free.
         """
+        # Count the request first: even a response we can't price still advances
+        # the request ceiling, so a mis-shaped response can't be "free" forever.
         self.requests += 1
         self.total.input_tokens += int(input_tokens)
         self.total.output_tokens += int(output_tokens)
@@ -142,6 +176,9 @@ class RunBudget:
             usable = False
             credits = 0.0
         if not usable:
+            # Fail closed: no usable provider cost -> estimate from tokens with a
+            # deliberately high rate, so a renamed/absent 'cost' field over-charges
+            # (cap trips early) rather than counting as zero (cap never reached).
             tok = int(input_tokens) + int(output_tokens)
             credits = tok / 1_000_000.0 * _FALLBACK_CREDITS_PER_MTOK
             if not self.cost_missing:
@@ -218,6 +255,8 @@ class AdaptionClient(LLMClient):
         temperature: float = 0.0,
         max_output_tokens: int = 1024,
     ) -> ModelReply:
+        # Order matters: reject unsafe tools and confirm we're under budget BEFORE
+        # we build a request or spend anything.
         validate_tools(tools)
         self.budget.check()
 
@@ -230,7 +269,7 @@ class AdaptionClient(LLMClient):
             "input": input_items,
             "tools": tools,
         }
-        headers = {"Authorization": f"Bearer {_key()}"}
+        headers = {"Authorization": f"Bearer {_key()}"}  # key fetched here, never stored on the object
 
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -238,18 +277,21 @@ class AdaptionClient(LLMClient):
                 r = httpx.post(ADAPTION_URL, json=body, headers=headers, timeout=self.timeout)
             except httpx.HTTPError as e:
                 last_err = e
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt)  # exponential backoff on transport errors
                 continue
             if r.status_code == 200:
                 return self._parse(r.json())
             if r.status_code in (429, 502, 503) and attempt < self.max_retries:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt)  # retry only transient rate-limit / gateway errors
                 continue
             # Redact the response text in case it echoes anything sensitive.
             raise RuntimeError(f"Adaption HTTP {r.status_code}: {redact(r.text)[:300]}")
         raise RuntimeError(f"Adaption request failed after retries: {last_err}")
 
     def _parse(self, d: dict[str, Any]) -> ModelReply:
+        # Read back ONLY two kinds of item: text messages and function_call
+        # requests. The model proposes a command; it never runs one. Nothing in
+        # this response is executed here -- the broker decides, in the container.
         output = d.get("output", []) or []
         tool_calls: list[dict[str, Any]] = []
         text_parts: list[str] = []
@@ -279,9 +321,13 @@ class AdaptionClient(LLMClient):
         in_tok = int(u.get("input_tokens", 0) or 0)
         out_tok = int(u.get("output_tokens", 0) or 0)
         before = self.budget.cost_missing
+        # Charge the shared budget now, so this request's spend is on the books
+        # before the broker acts on the reply (the next check() sees it).
         charged = self.budget.charge(
             cost=u.get("cost"), input_tokens=in_tok, output_tokens=out_tok
         )
+        # Flag that THIS reply's cost was estimated (provider sent no usable cost),
+        # so callers/logs can tell reported spend from estimated spend.
         estimated = self.budget.cost_missing and ("cost" not in u or u.get("cost") is None)
         return ModelReply(
             text=text or "",

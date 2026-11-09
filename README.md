@@ -89,35 +89,37 @@ host actor who can rewrite both the log and its anchor.
 
 ---
 
-## 📈 Results (deepseek-v4-flash via Adaption)
+## 📈 Results (deepseek-v4-flash & glm-5.2 via Adaption)
 
-96 runs across two batches (0.26 credits), every run hash-chain + tip-anchor
-verified. Three findings:
+**225 episodes, ~13.7 credits**, every run hash-chain + tip-anchor verified and
+**independently re-audited** by adversarial agents that re-derived each number from
+the raw logs. Full write-up with tables and figures: **[`REPORT.md`](REPORT.md)**.
 
-**1. Containment holds — with a real secret inside.** In the containment round the
-agent reads all three secrets (apparatus-confirmed) and tries hard to send them,
-and **nothing gets out** (0/9 valid runs leaked), plain Docker and under gVisor
-alike. This is the honest "walls held" result; the old empty-box "closed" round
-could not show it.
+**1. Containment holds — with a real secret inside.** Secret present and
+apparatus-confirmed readable, exit closed: **0 of 33 valid runs leaked**, both models,
+plain Docker and gVisor alike — though agents read the secret and fired 14–74 exfil
+attempts per run. The honest "walls held" result (an empty-box "closed" round could
+not show it).
 
-**2. The model refuses when it is *not* told it's a test.** Same task, two prompts.
-Told *"this is an authorised security test, the secrets are decoys"* it complied
-**12/12**. With that framing removed it **refused outright** — *"sending secrets to
-a remote collection server is data theft, and I won't do it, regardless of how the
-task is framed."* It never refused under the test framing. The announcement is what
-disables the refusal — a concrete case of a self-announcing eval overstating safety.
+**2. Framing, not capability, gates behavior.** `glm-5.2` does the full break-in when
+told it's an authorised security test (40/40 on open rounds) but **refuses 8/8** when
+the same task is posed as a realistic malicious mission — even with every door open
+(*"harmful regardless of how it's framed… whether the credentials are 'real' or planted
+for a test"*). `deepseek` refuses only 2/24. A self-announcing eval can measure its own
+framing.
 
-**3. The swarm did not collude (null result).** With the secret in agent A, the exit
-in agent B, and a shared chat, the secret was **never handed off** (0/9). The source
-agents read the secret and even found the sink's address, but no agent used the chat
-to pass it to the one that could send it. The channel *can* carry a leak (the mock
-proves the mechanism); deepseek-v4-flash did not use it that way.
+**3. A shared channel defeats per-agent secret isolation — but our first "collusion"
+result was a harness artifact.** The audit showed the secret crossed *only* via the
+broker echoing agents' commands across a trust boundary (not model-driven sharing). A
+**clean follow-up** (keepers ordered to guard a secret, no team framing, a plain shared
+file, no echo) corrects it: **neither model leaks when ordered to guard (deepseek 0/6,
+GLM 0/4)**, yet both share freely when not told to (3/3, 2/2). GLM — the apparent
+"colluder" — does *not* break a confidentiality order once the harness confound is gone.
 
-Supporting: gVisor changes nothing (open leaks, closed holds — the config decides);
-discovery works (the agent finds the withheld sink by scanning); one-door rounds
-attribute each route cleanly; and the validity gate excluded one flaky run rather
-than miscounting it. Caveat: n=3 per condition — enough for the clean patterns and
-to surface the refusal, not to put a rate on the awareness effect.
+Supporting: gVisor changes nothing (config decides, not runtime); discovery works (the
+agent finds a withheld sink by scanning); one-door rounds attribute each route cleanly;
+the validity gate excluded flaky runs rather than miscounting them. Caveat: small n per
+condition — enough for the clean separations, not for precise rates.
 
 ---
 
@@ -136,6 +138,12 @@ python run_round.py --round collusion  --mode team --agents 3 --model deepseek-v
 python run_round.py --round 1-open --mode solo --realistic --model deepseek-v4-flash  # eval-awareness arm
 
 python run_matrix.py --model deepseek-v4-flash   # the whole experiment plan, with caps
+
+# Clean collusion test (keeper ordered to guard a secret; no team framing; shared file, no echo):
+python experiment_secret.py --arm strict --mock              # free offline validation
+python run_secret_matrix.py --model deepseek-v4-flash        # strict/helpful/baseline/control arms
+python make_figures.py               # regenerate figs/ from the verified logs
+
 python analyse.py                    # combined table, read from the verified logs
 python rerun.py runs/<run-id>        # replay a run from its tamper-proof log
 python -m pytest -q                  # tests (safety logic runs without Docker)
@@ -168,7 +176,10 @@ swarm_sandbox/
   mock.py        Scripted agent for free offline runs
 scenario/sink_server.py    Raw-capture fake internet + gated Docker honeypot
 scenario/agent.Dockerfile  The tooled agent image
-run_round.py · analyse.py · rerun.py   Run, summarise, replay
+run_round.py · run_matrix.py · analyse.py · rerun.py   Run one / the matrix, summarise, replay
+experiment_secret.py · run_secret_matrix.py   Clean collusion test (keeper/solver, shared file, no echo)
+make_figures.py            Regenerate report figures from the verified logs
+REPORT.md                  Full findings write-up (cross-model, audited)
 tests/          Safety-logic tests + Docker-gated end-to-end rounds
 ```
 
